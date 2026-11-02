@@ -14,9 +14,10 @@
   - **RFC 8707 `resource`**：从受保护资源元数据读取，并传给授权、换取 token 和刷新请求；提供方不发布该值时不自行猜测。
   - **发现链**按 RFC 9728 → RFC 8414 顺序：MCP 端点 401 响应里的 `WWW-Authenticate` 指向受保护资源元数据，该文档再指出授权服务器，最后按 RFC 8414 的「路径插值」URL 读取授权服务器元数据（如 `https://github.com/.well-known/oauth-authorization-server/login/oauth`）。只有完全发现不到时才回退到猜测 `${origin}/oauth/*`，且日志里会说明这是猜的。
   - **手动客户端凭据**：适配不支持动态注册的授权服务器（GitHub 就不支持）——填 **Client ID**（你在提供方注册的应用），可选填 **Client Secret 环境变量名**（作为 `client_secret` 发送，密钥本身绝不落盘），以及 **Scopes**。
+  - **动态注册的客户端名称**：发给 RFC 7591 注册的 `client_name`，默认 `dsh-mcp-manager-<服务器名>`。个别提供方只接受自家白名单里的名称，其余一律 `403`（Figma 的注册端点就是这样）。把 **Client name** 填成对方接受的值即可；改名会在下次授权时重新注册，并保留已有 token。注册接口顺带返回的 `client_secret` 与 token 存在一起，每次换取和刷新 token 都会带上。
   - **Scope 选择**（遵循 MCP 授权规范）：授权请求的 `scope` 依次取自：**Scopes** 字段（或在 `~/.dsh/mcp-manager.json` 中手动填写的 `oauth.scope`）→ 服务器 401 `WWW-Authenticate` 里的 `scope` → 受保护资源元数据的 `scopes_supported`（RFC 9728）→ 授权服务器的 `scopes_supported`（RFC 8414）；都没有时不发送 scope。只要受保护资源元数据给出了资源标识，授权和换取 token 两个请求都会带上 `resource=<MCP 服务器 URL>`（RFC 8707）。
   - **权限范围不足**：已认证的请求若返回 `403`，或 `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"`，服务器会显示「权限范围不足（所需 scope）」而不是原始的 `initialize HTTP 403`，并提供「重新认证并授予权限」按钮；下次授权会追加服务器要求的 scope。（单次 `tools/call` 只有明确的 `insufficient_scope` 才触发此流程，单纯的 403 视为该工具自身的拒绝。）
-  - **外部编辑**：每次写入都会在文件锁下重新读取 `~/.dsh/mcp-manager.json` 并按字段合并，DSH 运行期间的手动修改不会被覆盖；开始授权时也会从磁盘重新读取全局服务器的 `scope` / `clientId` / `clientSecretEnv` / `oauth.scope`（工作区服务器这三项以工作区 `mcp.json` 为准）。
+  - **外部编辑**：每次写入都会在文件锁下重新读取 `~/.dsh/mcp-manager.json` 并按字段合并，DSH 运行期间的手动修改不会被覆盖；开始授权时也会从磁盘重新读取全局服务器的 `scope` / `clientId` / `clientSecretEnv` / `clientName` / `oauth.scope`（工作区服务器这几项以工作区 `mcp.json` 为准）。
 - **静态 Bearer Token** 模式：适配没有 OAuth 的服务器——以环境变量**名称**（Codex 风格 `tokenEnv`）引用，token 明文不落盘。
 - **无鉴权**模式：适配完全不需要凭据的服务器（例如本机 `http://127.0.0.1:9316/mcp`）——插件不发送 `Authorization` 头，保存后直接连接。
 - **自定义 HTTP 标头**：`headers`（直接值）+ `headerEnv`（值取自环境变量），对齐 Codex 的 `http_headers` / `env_http_headers`。
@@ -146,7 +147,7 @@ mcp__odin__execute_tool     mcp__odin__list_tool_scopes
 - 工作区 **日志** 对每一行都可用，而不只是已加载的那些：id 是确定性的（`ws-<sha256(工作区+名称)[0:20]>`），因此从磁盘列出的条目在加载后仍是同一个 id，`GET /mcp-manager/api/servers/:id/logs` 对已加载、冲突与尚未加载的条目一律返回 200。`POST .../connect` 对已加载条目执行重连，对冲突条目返回 409（`server name is taken by another server`），该 id 无已加载连接时返回 404。日志保留脱敏后的底层失败原因（如 `ECONNREFUSED`），配置重扫后仍可查看，删除服务器时清除。
 
 恢复回归测试：`node --test test/workspace-reconnect.test.js`。真实 Loader 冒烟验证为手动启用：先将 `@deepseek-ai/dsh@0.2.1-rc.2` 安装到临时 npm prefix，再运行 `node scripts/verify-real-dsh.mjs <prefix>`。脚本会自行创建并删除临时 profile 和工作区，仅访问 loopback MCP，不发起模型请求。已在 macOS / Node 24.12.0 验证，Windows 尚未验证。
-- 工作区服务器支持 **stdio**、**HTTP 静态 token**（`tokenEnv`）、**HTTP OAuth**（与全局服务器相同的发现 + PKCE + 动态客户端注册流程，手写配置同样支持可选的 `clientId` / `clientSecretEnv` / `scope`）与 **HTTP 无鉴权**（`authMode: "none"`，不发 `Authorization` 头）。工作区 OAuth token 持久化在 `~/.dsh/mcp-manager.json`（绝不写进声明式的 `mcp.json`）；每条工作区 OAuth 服务器行都有「去认证」按钮。
+- 工作区服务器支持 **stdio**、**HTTP 静态 token**（`tokenEnv`）、**HTTP OAuth**（与全局服务器相同的发现 + PKCE + 动态客户端注册流程，手写配置同样支持可选的 `clientId` / `clientSecretEnv` / `clientName` / `scope`）与 **HTTP 无鉴权**（`authMode: "none"`，不发 `Authorization` 头）。工作区 OAuth token 持久化在 `~/.dsh/mcp-manager.json`（绝不写进声明式的 `mcp.json`）；每条工作区 OAuth 服务器行都有「去认证」按钮。
 
 ## 工作原理
 
@@ -161,7 +162,7 @@ Client ID，每次请求都从指定环境变量读取当前 client secret。全
 | OAuth 流程 | host 半先发现授权服务器（RFC 9728 受保护资源元数据 → RFC 8414 授权服务器元数据），再做动态客户端注册（或使用手动配置的 Client ID）+ PKCE；重定向落在 DSH GUI webserver 自身挂载的路由上 |
 | OAuth 发现 | 解析 MCP 端点 401 响应里的 `WWW-Authenticate` 的 `resource_metadata` 并缓存到该服务器；资源元数据指出授权服务器，其元数据按 RFC 8414 路径插值 well-known URL 读取（另有 OpenID configuration 与 origin 级探测）。猜测的 `${origin}/oauth/*` 只是最后兜底，并会标记为 fallback |
 | 诊断日志 | 每服务器一个内存环形缓冲（最多 20 条），记录 discovery/register/authorize/token/initialize/tools-list/stdio 各阶段及 URL 与 HTTP 状态，经 `GET /mcp-manager/api/servers/:id/logs` 暴露；写入时即脱敏，且不落盘（写日志文件会引入新的静态密钥面） |
-| Token 存储 | `~/.dsh/mcp-manager.json`；OAuth token 401 时自动刷新。静态 token 从 `tokenEnv` 指定的环境变量读取，OAuth `client_secret` 从 `clientSecretEnv` 指定的环境变量读取，两者的值都不落盘。无鉴权服务器不存凭据、也不发送 `Authorization` 头 |
+| Token 存储 | `~/.dsh/mcp-manager.json`；OAuth token 401 时自动刷新。静态 token 从 `tokenEnv` 指定的环境变量读取，OAuth `client_secret` 从 `clientSecretEnv` 指定的环境变量读取，两者的值都不落盘。唯一例外是提供方在动态注册时直接签发的 secret：它与 token 一起存在同一个 0600 状态文件里，绝不投影到 UI、日志或消息。无鉴权服务器不存凭据、也不发送 `Authorization` 头 |
 | 刷新安全 | 刷新在进程内单飞，并在共享同一状态文件的多个 DSH 进程之间串行：刷新与所有配置写入共享同一把锁，本进程按 FIFO 顺序获得锁，防止较早排队的保存覆盖较晚的保存，锁内重读采用磁盘最新凭据，即使 access token 已过期也使用最新 refresh token。仅合并本进程更改的字段，保留其他进程更新的服务器及工作区凭据。陈旧锁仅在持有者已退出或创建不完整时回收，不会因时间过长抢占活跃进程的锁。陈旧锁回收也互斥；回收进程崩溃留下 `.refresh.lock.reclaim` 时，需要操作员核实并移除该文件后才恢复自动回收，此前写入会超时而不抢锁。状态文件原子替换（0600、fsync + rename）。轮换成功但落盘失败时，该进程继续使用内存中的 access token，但停止后续刷新；先修复状态文件路径，再重新授权。`invalid_grant` 会把服务器标为 `needs-auth` 并停止重放已作废的 token。`/api/servers` 返回 `oauth.expiresAt`、`needsReauth`、`lastRefreshAt`、`lastRefreshError`、`lastToolOkAt`——只有时间戳和错误码，绝不含 token 本身 |
 | 旧状态迁移 | 加载时给缺少 `id` 的服务器补一个并落盘，同时把 `[{ name, value }]` 形式的 env/header 列表归一化为映射——否则按 id 的 API 会 404、数组形式的 env 会被静默丢弃 |
 | MCP 传输（HTTP） | Streamable HTTP（POST JSON-RPC、`Mcp-Session-Id`、SSE/JSON 双格式响应），并在服务器拒绝普通 POST 时自动降级到旧式 HTTP-with-SSE 会话传输（GET 流给出 POST 端点、响应经该流异步回传）；每次请求合并自定义 `headers`/`headerEnv` |
