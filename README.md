@@ -161,6 +161,29 @@ Global servers (added in **Settings → MCP**) are visible in every workspace. U
 Recovery regression tests run with `node --test test/workspace-reconnect.test.js`. For an opt-in real Loader smoke, install `@deepseek-ai/dsh@0.2.1-rc.2` into a disposable npm prefix, then run `node scripts/verify-real-dsh.mjs <prefix>`. The script creates and deletes its own temporary profile and workspace, uses loopback MCP only, and submits no model request. Verified on macOS / Node 24.12.0; Windows remains unverified.
 - Workspace servers support **stdio**, **HTTP static-token** (`tokenEnv`), **HTTP OAuth** (the same discovery + PKCE + dynamic client registration flow as global servers, including the optional `clientId` / `clientSecretEnv` / `clientName` / `scope` fields in the hand-written config), and **HTTP no-auth** (`authMode: "none"`, no `Authorization` header). Workspace OAuth tokens persist in `~/.dsh/mcp-manager.json` (never in the declarative `mcp.json`); each workspace server row exposes a **去认证 / Authenticate** button for OAuth servers.
 
+### Network proxy
+
+Proxies are resolved per server, so a workspace can share one declaration and each machine can still route through its own proxy without editing the shared file:
+
+1. `proxy` on the server entry (in either file);
+2. `proxy` at the root of `.dsh/dshmm/mcp.local.json` (the machine-local overlay);
+3. `proxy` at the root of `.dsh/dshmm/mcp.json` (shared by the team);
+4. the environment: `DSH_MCP_PROXY`, then `HTTPS_PROXY` / `https_proxy`, then `HTTP_PROXY` / `http_proxy`.
+
+`"proxy": "direct"` (also `none` / `off` / `false` / `""`) opts one server out even when the workspace or the environment sets one. Values must be `http://` or `https://`, optionally with basic credentials (`http://user:pass@127.0.0.1:7890`); a malformed value is reported as a workspace error instead of silently connecting directly. `proxy` is HTTP-only: a stdio entry with `proxy` is rejected, and stdio servers never use a proxy.
+
+```json
+{
+  "proxy": "http://127.0.0.1:7890",
+  "mcpServers": {
+    "figma": { "type": "http", "url": "https://mcp.figma.com/mcp", "authMode": "oauth", "clientName": "Claude Code" },
+    "local-mcp": { "type": "http", "url": "http://127.0.0.1:9316/mcp", "authMode": "none", "proxy": "direct" }
+  }
+}
+```
+
+Keep machine-specific proxies in `.dsh/dshmm/mcp.local.json` and gitignore that file: the overlay is merged over `mcp.json` (per-server fields win, `disabled` / `exclude` are unioned) and hot-reloaded like the shared file. Plain-http targets are sent with an absolute-form request line, so the proxy does not need CONNECT support; HTTPS targets tunnel with CONNECT. The proxy covers the whole MCP lifecycle — OAuth discovery (retried up to three times on transient failures), dynamic client registration, token exchange and refresh, JSON-RPC requests and SSE event streams. `undici` is a declared dependency of this fork.
+
 ## How it works
 
 In v0.13.4, pre-registered OAuth clients reuse the configured Client ID for both

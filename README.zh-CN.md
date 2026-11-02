@@ -149,6 +149,29 @@ mcp__odin__execute_tool     mcp__odin__list_tool_scopes
 恢复回归测试：`node --test test/workspace-reconnect.test.js`。真实 Loader 冒烟验证为手动启用：先将 `@deepseek-ai/dsh@0.2.1-rc.2` 安装到临时 npm prefix，再运行 `node scripts/verify-real-dsh.mjs <prefix>`。脚本会自行创建并删除临时 profile 和工作区，仅访问 loopback MCP，不发起模型请求。已在 macOS / Node 24.12.0 验证，Windows 尚未验证。
 - 工作区服务器支持 **stdio**、**HTTP 静态 token**（`tokenEnv`）、**HTTP OAuth**（与全局服务器相同的发现 + PKCE + 动态客户端注册流程，手写配置同样支持可选的 `clientId` / `clientSecretEnv` / `clientName` / `scope`）与 **HTTP 无鉴权**（`authMode: "none"`，不发 `Authorization` 头）。工作区 OAuth token 持久化在 `~/.dsh/mcp-manager.json`（绝不写进声明式的 `mcp.json`）；每条工作区 OAuth 服务器行都有「去认证」按钮。
 
+### 网络代理
+
+代理按服务器逐个解析，所以一个工作区可以共用同一份声明，每台机器再各自走自己的代理，不必改共享文件：
+
+1. 服务器条目上的 `proxy`（两个文件都支持）；
+2. `.dsh/dshmm/mcp.local.json`（机器本地覆盖层）根部的 `proxy`；
+3. `.dsh/dshmm/mcp.json`（团队共享）根部的 `proxy`；
+4. 环境变量：先 `DSH_MCP_PROXY`，再 `HTTPS_PROXY` / `https_proxy`，最后 `HTTP_PROXY` / `http_proxy`。
+
+`"proxy": "direct"`（也接受 `none` / `off` / `false` / `""`）可以让单台服务器在全局或环境都配了代理时直连。取值必须是 `http://` 或 `https://`，可带 basic 凭据（`http://user:pass@127.0.0.1:7890`）；格式非法会报成工作区错误，而不是悄悄直连。`proxy` 只对 HTTP 服务器有意义：stdio 条目写了 `proxy` 会被拒绝，stdio 服务器也从不走代理。
+
+```json
+{
+  "proxy": "http://127.0.0.1:7890",
+  "mcpServers": {
+    "figma": { "type": "http", "url": "https://mcp.figma.com/mcp", "authMode": "oauth", "clientName": "Claude Code" },
+    "local-mcp": { "type": "http", "url": "http://127.0.0.1:9316/mcp", "authMode": "none", "proxy": "direct" }
+  }
+}
+```
+
+与机器相关的代理请写在 `.dsh/dshmm/mcp.local.json` 并把它加进 gitignore：覆盖层会合并到 `mcp.json` 之上（逐服务器字段以覆盖层为准，`disabled` / `exclude` 取并集），并且和共享文件一样热重载。明文 HTTP 目标使用绝对形式请求行，代理不必支持 CONNECT；HTTPS 目标才用 CONNECT 建立隧道。代理覆盖整条 MCP 链路——OAuth 发现（瞬时失败最多重试三次）、动态客户端注册、token 交换与刷新、JSON-RPC 请求与 SSE 事件流。`undici` 是本 fork 声明的依赖。
+
 ## 工作原理
 
 v0.13.4 修复手动注册的 OAuth 客户端刷新：授权码交换和刷新都使用配置的
