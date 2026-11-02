@@ -206,7 +206,7 @@ Client ID，每次请求都从指定环境变量读取当前 client secret。全
 发行版不可变且带 tag，消费者可以固定到某个版本：
 
 ```sh
-npx -p @deepseek-ai/dsh dsh plugin --profile web add github:hyqhyq3/dsh-mcp-manager#v0.16.0
+npx -p @deepseek-ai/dsh dsh plugin --profile web add github:suveng/dsh-mcp-manager#v0.16.2-fork.2
 ```
 
 DSH STORE 目录额外固定完整的 40 位 commit，而不是浮动分支（0.12.0 发行 = `b029407ca3d258e83abac6c06ff94f92e5687164`；每次推送后由商城重新固定最新发行版）。

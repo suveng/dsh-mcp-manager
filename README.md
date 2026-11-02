@@ -219,7 +219,7 @@ attempts cannot restore tools or clear a newer connection.
 Releases are immutable and tagged, so consumers can pin one:
 
 ```sh
-npx -p @deepseek-ai/dsh dsh plugin --profile web add github:hyqhyq3/dsh-mcp-manager#v0.16.0
+npx -p @deepseek-ai/dsh dsh plugin --profile web add github:suveng/dsh-mcp-manager#v0.16.2-fork.2
 ```
 
 The DSH STORE catalog additionally pins a full 40-character commit instead of a floating branch (release 0.12.0 = `b029407ca3d258e83abac6c06ff94f92e5687164`; the store re-pins the newest release after each push).
