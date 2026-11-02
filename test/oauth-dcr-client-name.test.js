@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -215,4 +215,34 @@ it('rejects an unusable clientName instead of sending it', async (t) => {
   const control = await request(handler, 'POST', '/mcp-manager/api/servers', { name: nextName(), type: 'http', url: stub.mcpUrl, clientName: 'bad\u0001name' });
   assert.equal(control.code, 400, control.text);
   assert.equal(stub.registrations.length, 0);
+});
+
+it('reads clientName from a workspace mcp.json and projects it', async (t) => {
+  const dir = join(scratchHome, 'ws-figma');
+  mkdirSync(join(dir, '.dsh/dshmm'), { recursive: true });
+  const name = 'figma-ws-' + nextName();
+  writeFileSync(join(dir, '.dsh/dshmm/mcp.json'), JSON.stringify({
+    mcpServers: { [name]: { type: 'http', url: 'https://mcp.figma.com/mcp', authMode: 'oauth', clientName: 'Claude Code' } },
+  }, null, 2));
+  let handler;
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    tools: { guard: () => () => {}, register: () => () => {}, restrict: () => () => {}, execute: async () => ({}) },
+    get: (service) => service === 'workspaceRegistry' ? { list: () => [{ path: dir }] } : undefined,
+    on: () => () => {},
+    effect: (fn) => { fn(); return () => {}; },
+    inject: (names, callback) => {
+      callback({
+        webServer: { register: (route) => { handler = route.handler; return () => {}; } },
+        effect: (fn) => fn(),
+        get: () => undefined,
+      });
+      return { dispose: () => {} };
+    },
+  };
+  apply(ctx, {});
+  const listed = await request(handler, 'GET', '/mcp-manager/api/workspaces');
+  assert.equal(listed.code, 200, listed.text);
+  const entry = listed.json.workspaces.find((workspace) => workspace.path === dir).servers.find((server) => server.name === name);
+  assert.equal(entry.clientName, 'Claude Code');
 });
