@@ -182,6 +182,8 @@ Proxies are resolved per server, so a workspace can share one declaration and ea
 }
 ```
 
+Both levels are editable from **Settings → MCP**: the selected workspace card has a *local proxy* field that writes the root `proxy` of `mcp.local.json`, and the edit form of an HTTP workspace server has a per-server proxy field. Both write only the local overlay, so the shared `mcp.json` stays untouched; clearing a field removes the override and `direct` is stored explicitly.
+
 Keep machine-specific proxies in `.dsh/dshmm/mcp.local.json` and gitignore that file: the overlay is merged over `mcp.json` (per-server fields win, `disabled` / `exclude` are unioned) and hot-reloaded like the shared file. Plain-http targets are sent with an absolute-form request line, so the proxy does not need CONNECT support; HTTPS targets tunnel with CONNECT. The proxy covers the whole MCP lifecycle — OAuth discovery (retried up to three times on transient failures), dynamic client registration, token exchange and refresh, JSON-RPC requests and SSE event streams. `undici` is a declared dependency of this fork.
 
 ## How it works

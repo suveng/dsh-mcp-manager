@@ -170,6 +170,8 @@ mcp__odin__execute_tool     mcp__odin__list_tool_scopes
 }
 ```
 
+两级都可以在 **设置 → MCP** 里直接编辑：选中工作区后卡片上有「本机代理」输入框（写 `mcp.local.json` 的根 `proxy`），HTTP 工作区服务器的编辑表单里有逐服务器代理字段。两者都只写本机覆盖层，不会动共享的 `mcp.json`；清空输入表示删除覆盖，填 `direct` 表示显式直连。
+
 与机器相关的代理请写在 `.dsh/dshmm/mcp.local.json` 并把它加进 gitignore：覆盖层会合并到 `mcp.json` 之上（逐服务器字段以覆盖层为准，`disabled` / `exclude` 取并集），并且和共享文件一样热重载。明文 HTTP 目标使用绝对形式请求行，代理不必支持 CONNECT；HTTPS 目标才用 CONNECT 建立隧道。代理覆盖整条 MCP 链路——OAuth 发现（瞬时失败最多重试三次）、动态客户端注册、token 交换与刷新、JSON-RPC 请求与 SSE 事件流。`undici` 是本 fork 声明的依赖。
 
 ## 工作原理

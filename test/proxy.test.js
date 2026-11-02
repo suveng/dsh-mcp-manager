@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -284,4 +284,152 @@ it('retries transient discovery failures before falling back', async t => {
   assert.match(auth.authorizeUrl, /client_id=cid-test/);
   assert.equal(stub.hits(), 3, 'two 503s then a 200');
   assert.equal(stub.clientName(), 'dsh-mcp-manager-oauth');
+});
+
+const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
+const localPath = (dir) => join(dir, '.dsh/dshmm/mcp.local.json');
+const basePath = (dir) => join(dir, '.dsh/dshmm/mcp.json');
+
+it('reports the local proxy override separately from the effective proxy', async t => {
+  const h = mount(t, {
+    mcp: {
+      proxy: 'http://127.0.0.1:7801',
+      mcpServers: {
+        alpha: { type: 'http', url: 'http://127.0.0.1:1/mcp' },
+        beta: { type: 'http', url: 'http://127.0.0.1:2/mcp' },
+      },
+    },
+    local: { mcpServers: { beta: { proxy: 'direct' } } },
+  });
+  const ws = await h.workspace();
+  assert.equal(ws.proxy, '', 'the root input shows only the local override');
+  assert.equal(ws.proxyLocal, false);
+  assert.equal(ws.proxyEffective, 'http://127.0.0.1:7801');
+  const alpha = ws.servers.find(s => s.name === 'alpha');
+  assert.equal(alpha.proxy, '');
+  assert.equal(alpha.proxyLocal, false);
+  assert.equal(alpha.proxyEffective, 'http://127.0.0.1:7801');
+  assert.equal(alpha.proxyInherited, true);
+  const beta = ws.servers.find(s => s.name === 'beta');
+  assert.equal(beta.proxy, '', 'direct is a real local value, not "unset"');
+  assert.equal(beta.proxyLocal, true);
+  assert.equal(beta.proxyEffective, '');
+  assert.equal(beta.proxyInherited, false);
+});
+
+it('writes the workspace proxy into the local overlay and clears it again', async t => {
+  const h = mount(t, { mcp: { mcpServers: { alpha: { type: 'http', url: 'http://127.0.0.1:1/mcp' } } } });
+  const set = await h.api('POST', '/workspaces/proxy', { path: h.dir, proxy: 'http://127.0.0.1:7893/' });
+  assert.equal(set.code, 200);
+  assert.deepEqual(readJson(localPath(h.dir)), { proxy: 'http://127.0.0.1:7893' });
+  let ws = await h.workspace();
+  assert.equal(ws.proxy, 'http://127.0.0.1:7893');
+  assert.equal(ws.proxyLocal, true);
+  assert.equal(ws.servers[0].proxyEffective, 'http://127.0.0.1:7893');
+
+  const cleared = await h.api('POST', '/workspaces/proxy', { path: h.dir, proxy: '' });
+  assert.equal(cleared.code, 200);
+  assert.equal(existsSync(localPath(h.dir)), false, 'an emptied overlay must not stay on disk');
+  ws = await h.workspace();
+  assert.equal(ws.proxy, '');
+  assert.equal(ws.proxyEffective, '');
+
+  const directRoot = await h.api('POST', '/workspaces/proxy', { path: h.dir, proxy: 'direct' });
+  assert.equal(directRoot.code, 200);
+  assert.equal(readJson(localPath(h.dir)).proxy, '');
+  ws = await h.workspace();
+  assert.equal(ws.proxy, 'direct', 'an explicit direct root override must round-trip into the form');
+  assert.equal(ws.proxyLocal, true);
+  assert.equal(ws.proxyEffective, '');
+
+  const bad = await h.api('POST', '/workspaces/proxy', { path: h.dir, proxy: 'socks5://127.0.0.1:1080' });
+  assert.equal(bad.code, 400);
+  assert.match(bad.error, /only http/);
+  const missing = await h.api('POST', '/workspaces/proxy', { path: h.dir });
+  assert.equal(missing.code, 400);
+});
+
+it('edits a per-server proxy through the local overlay without touching mcp.json', async t => {
+  const h = mount(t, { mcp: { mcpServers: { alpha: { type: 'http', url: 'http://127.0.0.1:1/mcp', authMode: 'none' } } } });
+  const created = await h.api('POST', '/workspaces/servers', {
+    path: h.dir, name: 'beta', type: 'http', url: 'http://127.0.0.1:2/mcp', authMode: 'none', proxy: 'http://127.0.0.1:7894',
+  });
+  assert.equal(created.code, 200);
+  assert.equal(readJson(basePath(h.dir)).mcpServers.beta.proxy, undefined, 'mcp.json must stay machine-independent');
+  assert.equal(readJson(localPath(h.dir)).mcpServers.beta.proxy, 'http://127.0.0.1:7894');
+  let beta = (await h.workspace()).servers.find(s => s.name === 'beta');
+  assert.equal(beta.proxy, 'http://127.0.0.1:7894');
+  assert.equal(beta.proxyLocal, true);
+
+  const renamed = await h.api('PUT', '/workspaces/servers', {
+    path: h.dir, oldName: 'beta', name: 'gamma', type: 'http', url: 'http://127.0.0.1:2/mcp', authMode: 'none',
+  });
+  assert.equal(renamed.code, 200);
+  const afterRename = readJson(localPath(h.dir));
+  assert.equal(afterRename.mcpServers.beta, undefined);
+  assert.equal(afterRename.mcpServers.gamma.proxy, 'http://127.0.0.1:7894', 'a rename must carry the local proxy');
+
+  const direct = await h.api('PUT', '/workspaces/servers', {
+    path: h.dir, oldName: 'gamma', name: 'gamma', type: 'http', url: 'http://127.0.0.1:2/mcp', authMode: 'none', proxy: 'direct',
+  });
+  assert.equal(direct.code, 200);
+  assert.equal(readJson(localPath(h.dir)).mcpServers.gamma.proxy, '');
+  const gamma = (await h.workspace()).servers.find(s => s.name === 'gamma');
+  assert.equal(gamma.proxyLocal, true);
+  assert.equal(gamma.proxyEffective, '');
+
+  const cleared = await h.api('PUT', '/workspaces/servers', {
+    path: h.dir, oldName: 'gamma', name: 'gamma', type: 'http', url: 'http://127.0.0.1:2/mcp', authMode: 'none', proxy: '',
+  });
+  assert.equal(cleared.code, 200);
+  assert.equal(existsSync(localPath(h.dir)), false, 'clearing the only local entry removes the overlay file');
+  assert.ok(readJson(basePath(h.dir)).mcpServers.gamma, 'the base entry itself stays');
+
+  const removed = await h.api('POST', '/workspaces/servers/delete', { path: h.dir, name: 'gamma' });
+  assert.equal(removed.code, 200);
+  assert.equal(readJson(basePath(h.dir)).mcpServers.gamma, undefined);
+
+  const bad = await h.api('POST', '/workspaces/servers', {
+    path: h.dir, name: 'cmd', type: 'stdio', command: 'npx', proxy: 'http://127.0.0.1:7895',
+  });
+  assert.equal(bad.code, 400);
+  assert.match(bad.error, /only supported for http/);
+});
+
+it('drops a local proxy when a server switches to stdio', async t => {
+  const h = mount(t, { mcp: { mcpServers: {} } });
+  const created = await h.api('POST', '/workspaces/servers', {
+    path: h.dir, name: 'beta', type: 'http', url: 'http://127.0.0.1:1/mcp', authMode: 'none', proxy: 'http://127.0.0.1:7896',
+  });
+  assert.equal(created.code, 200);
+  assert.equal(readJson(localPath(h.dir)).mcpServers.beta.proxy, 'http://127.0.0.1:7896');
+
+  const switched = await h.api('PUT', '/workspaces/servers', {
+    path: h.dir, oldName: 'beta', name: 'beta', type: 'stdio', command: process.execPath, args: ['-e', 'process.exit(0)'],
+  });
+  assert.equal(switched.code, 200);
+  assert.equal(readJson(basePath(h.dir)).mcpServers.beta.proxy, undefined);
+  assert.equal(existsSync(localPath(h.dir)), false, 'a stdio server must not keep a stale local proxy');
+  assert.ok(readJson(basePath(h.dir)).mcpServers.beta, 'the base stdio entry stays');
+});
+
+it('keeps a hand-written shared proxy when an edit omits the proxy field', async t => {
+  const h = mount(t, { mcp: { mcpServers: { alpha: { type: 'http', url: 'http://127.0.0.1:1/mcp', proxy: 'http://127.0.0.1:7005' } } } });
+  const res = await h.api('PUT', '/workspaces/servers', {
+    path: h.dir, oldName: 'alpha', name: 'alpha', type: 'http', url: 'http://127.0.0.1:2/mcp', authMode: 'none',
+  });
+  assert.equal(res.code, 200);
+  assert.equal(readJson(basePath(h.dir)).mcpServers.alpha.proxy, 'http://127.0.0.1:7005');
+  const alpha = (await h.workspace()).servers[0];
+  assert.equal(alpha.proxyEffective, 'http://127.0.0.1:7005');
+  assert.equal(alpha.proxyLocal, false);
+
+  // The form always sends its (empty) local field. Clearing the local override
+  // must still not strip the shared proxy out of mcp.json.
+  const formEdit = await h.api('PUT', '/workspaces/servers', {
+    path: h.dir, oldName: 'alpha', name: 'alpha', type: 'http', url: 'http://127.0.0.1:2/mcp', authMode: 'none', proxy: '',
+  });
+  assert.equal(formEdit.code, 200);
+  assert.equal(readJson(basePath(h.dir)).mcpServers.alpha.proxy, 'http://127.0.0.1:7005');
+  assert.equal(existsSync(localPath(h.dir)), false);
 });
